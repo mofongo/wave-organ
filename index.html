@@ -93,12 +93,14 @@
 <div id="spectrum"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/paper.js/0.12.17/paper-full.min.js"></script>
+<script src="engine.js"></script>
 <script>
 // ═══ CONFIG ═══════════════════════════════════════════════════════════════════
 const POINTS   = 10;
-const BASE_HZ  = 110;                           // A2 fundamental
 const PARTIALS = [1, 2, 3, 4, 5, 6, 7, 8, 9]; // harmonic series → segments 1–9
-const MAX_GAIN = 0.18;                          // per-oscillator ceiling (unscaled)
+
+// ═══ ENGINE ════════════════════════════════════════════════════════════════════
+const engine = new WaveOrganEngine({ baseHz: 110, partials: PARTIALS });
 
 // ═══ PAPER.JS SETUP ═══════════════════════════════════════════════════════════
 const canvas = document.getElementById('canvas');
@@ -148,7 +150,7 @@ paper.view.onFrame = event => {
   }
   if (isSmooth) wave.smooth({ type: 'continuous' });
 
-  if (synthReady) tick();
+  if (engine.isReady) tick();
 };
 
 window.addEventListener('resize', () => {
@@ -163,87 +165,29 @@ const specEl = document.getElementById('spectrum');
 const bars = PARTIALS.map(h => {
   const b = document.createElement('div');
   b.className = 'bar';
-  b.title = `${BASE_HZ * h} Hz`;
+  b.title = `${engine.baseHz * h} Hz`;
   specEl.appendChild(b);
   return b;
 });
 
-// ═══ WEB AUDIO ════════════════════════════════════════════════════════════════
-let audioCtx, master, limiter;
-let oscs = [], gains = [];
-let synthReady = false;
-
-function startAudio() {
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-
-  // Limiter — prevents clipping when many partials are active
-  limiter = audioCtx.createDynamicsCompressor();
-  limiter.threshold.value = -6;
-  limiter.knee.value      = 3;
-  limiter.ratio.value     = 20;
-  limiter.attack.value    = 0.001;
-  limiter.release.value   = 0.08;
-  limiter.connect(audioCtx.destination);
-
-  // Delay reverb tail
-  const delay    = audioCtx.createDelay(1.0);
-  const feedback = audioCtx.createGain();
-  const wetGain  = audioCtx.createGain();
-  delay.delayTime.value = 0.36;
-  feedback.gain.value   = 0.35;
-  wetGain.gain.value    = 0.18;
-  delay.connect(feedback);
-  feedback.connect(delay);
-  delay.connect(wetGain);
-  wetGain.connect(limiter);
-
-  // Master
-  master = audioCtx.createGain();
-  master.gain.value = 0.65;
-  master.connect(limiter);
-  master.connect(delay); // feed delay with pre-limiter signal
-
-  // One sine oscillator per harmonic partial
-  PARTIALS.forEach(h => {
-    const osc  = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-    osc.type            = 'sine';
-    osc.frequency.value = BASE_HZ * h;
-    gain.gain.value     = 0;
-    osc.connect(gain);
-    gain.connect(master);
-    osc.start();
-    oscs.push(osc);
-    gains.push(gain);
-  });
-
-  synthReady = true;
-}
-
-// Called every animation frame once audio is running
+// ═══ WAVE UI TICK ══════════════════════════════════════════════════════════════
+// Reads the current wave shape, computes a per-partial activation level (0–1),
+// passes it to the engine, and updates the spectrum bars to match.
 function tick() {
-  const amp = Math.abs(waveAmp); // effective wave amplitude
-  const now = audioCtx.currentTime;
+  const amp = Math.abs(waveAmp);
 
-  PARTIALS.forEach((h, i) => {
-    // Interior segments are indices 1..9; PARTIALS maps 1:1
+  const activations = PARTIALS.map((h, i) => {
     const y         = wave.segments[i + 1].point.y;
     const deviation = center.y - y; // positive = above midline = visual peak
+    return (deviation > 0 && amp > 8) ? Math.min(deviation / amp, 1) : 0;
+  });
 
-    // Only peaks above the centre contribute; scale by wave amplitude
-    // and apply 1/h spectral roll-off for natural additive timbre
-    let g = 0;
-    if (deviation > 0 && amp > 8) {
-      g = Math.min(deviation / amp, 1) * (MAX_GAIN / h);
-    }
+  engine.setActivations(activations);
 
-    gains[i].gain.setTargetAtTime(g, now, 0.06);
-
-    // Spectrum bar: height and hue proportional to gain
-    const maxG = MAX_GAIN / h;
-    const pct  = g / maxG;
+  // Spectrum bars: height and hue proportional to activation
+  activations.forEach((pct, i) => {
     bars[i].style.height     = `${Math.max(2, Math.round(pct * 60))}px`;
-    bars[i].style.background = g > 0.001
+    bars[i].style.background = pct > 0.01
       ? `hsl(${152 + i * 10}, 70%, ${22 + pct * 48}%)`
       : '#111';
   });
@@ -252,7 +196,7 @@ function tick() {
 // ═══ BOOTSTRAP ════════════════════════════════════════════════════════════════
 document.getElementById('startBtn').addEventListener('click', () => {
   document.getElementById('overlay').style.display = 'none';
-  startAudio();
+  engine.start();
 });
 </script>
 </body>
