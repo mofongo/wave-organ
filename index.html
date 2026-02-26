@@ -52,6 +52,42 @@
       pointer-events: none;
     }
 
+    #speed-control {
+      position: fixed;
+      bottom: 1.4rem;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 0.8rem;
+      color: #252525;
+      font-size: 0.65rem;
+      font-family: 'Courier New', monospace;
+      letter-spacing: 0.1em;
+    }
+    #speedSlider {
+      -webkit-appearance: none;
+      width: 120px;
+      height: 1px;
+      background: #252525;
+      outline: none;
+      cursor: pointer;
+    }
+    #speedSlider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 8px;
+      height: 8px;
+      background: #444;
+      border-radius: 50%;
+    }
+    #speedSlider::-moz-range-thumb {
+      width: 8px;
+      height: 8px;
+      background: #444;
+      border: none;
+      border-radius: 50%;
+    }
+
     /* Harmonic spectrum display */
     #spectrum {
       position: fixed;
@@ -90,6 +126,12 @@
   CLICK — smooth / sharp
 </div>
 
+<div id="speed-control">
+  SPEED
+  <input type="range" id="speedSlider" min="0.05" max="3" step="0.05" value="1">
+  <span id="speedVal">1.00×</span>
+</div>
+
 <div id="spectrum"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/paper.js/0.12.17/paper-full.min.js"></script>
@@ -110,6 +152,8 @@ paper.setup(canvas);
 
 let center, W, H;
 let isSmooth = true;
+let speed    = 1;
+let timeAccum = 0;
 const wave   = new paper.Path();
 let mousePos = paper.view.center.multiply(0.5);
 let waveAmp  = paper.view.center.y;
@@ -138,13 +182,15 @@ tool.onMouseDown = () => {
   if (!isSmooth) wave.segments.forEach(s => { s.handleIn = s.handleOut = null; });
 };
 
-paper.view.onFrame = event => {
+paper.view.onFrame = () => {
   // Smoothly track mouse y → wave amplitude
   waveAmp += (center.y - mousePos.y - waveAmp) / 10;
 
+  timeAccum += speed;
+
   // Animate interior segments
   for (let i = 1; i < POINTS; i++) {
-    const seed = event.count + (i + i % 10) * 100;
+    const seed = timeAccum + (i + i % 10) * 100;
     const sh   = Math.sin(seed / 200) * waveAmp;
     wave.segments[i].point.y = Math.sin(seed / 100) * sh + H;
   }
@@ -179,7 +225,7 @@ function tick() {
   const activations = PARTIALS.map((h, i) => {
     const y         = wave.segments[i + 1].point.y;
     const deviation = center.y - y; // positive = above midline = visual peak
-    return (deviation > 0 && amp > 8) ? Math.min(deviation / amp, 1) : 0;
+    return (deviation > 0 && amp > 8) ? Math.min(deviation / H, 1) : 0;
   });
 
   engine.setActivations(activations);
@@ -192,6 +238,14 @@ function tick() {
       : '#111';
   });
 }
+
+// ═══ SPEED SLIDER ═════════════════════════════════════════════════════════════
+const speedSlider = document.getElementById('speedSlider');
+const speedVal    = document.getElementById('speedVal');
+speedSlider.addEventListener('input', () => {
+  speed = parseFloat(speedSlider.value);
+  speedVal.textContent = `${speed.toFixed(2)}×`;
+});
 
 // ═══ BOOTSTRAP ════════════════════════════════════════════════════════════════
 document.getElementById('startBtn').addEventListener('click', () => {
