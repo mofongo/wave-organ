@@ -88,6 +88,28 @@
       border-radius: 50%;
     }
 
+    /* Mode toggle */
+    #mode-toggle {
+      position: fixed;
+      top: 1.4rem;
+      right: 1.4rem;
+      display: flex;
+    }
+    #mode-toggle button {
+      padding: 6px 16px;
+      font-family: 'Courier New', monospace;
+      font-size: 0.62rem;
+      letter-spacing: 0.18em;
+      background: transparent;
+      color: #252525;
+      border: 1px solid #1c1c1c;
+      cursor: pointer;
+      transition: all 0.18s;
+    }
+    #mode-toggle button:first-child { border-right: none; }
+    #mode-toggle button.active { color: #ccc; border-color: #333; background: #0d0d0d; }
+    #mode-toggle button:hover:not(.active) { color: #555; border-color: #2a2a2a; }
+
     /* Harmonic spectrum display */
     #spectrum {
       position: fixed;
@@ -132,14 +154,20 @@
   <span id="speedVal">1.00×</span>
 </div>
 
+<div id="mode-toggle">
+  <button id="btnAdditive" class="active">ADDITIVE</button>
+  <button id="btnWavetable">WAVETABLE</button>
+</div>
+
 <div id="spectrum"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/paper.js/0.12.17/paper-full.min.js"></script>
 <script src="engine.js"></script>
 <script>
 // ═══ CONFIG ═══════════════════════════════════════════════════════════════════
-const POINTS   = 10;
-const PARTIALS = [1, 2, 3, 4, 5, 6, 7, 8, 9]; // harmonic series → segments 1–9
+const POINTS    = 10;
+const PARTIALS  = [1, 2, 3, 4, 5, 6, 7, 8, 9]; // harmonic series → segments 1–9
+const N_SAMPLES = 64;                            // DFT resolution for wavetable mode
 
 // ═══ ENGINE ════════════════════════════════════════════════════════════════════
 const engine = new WaveOrganEngine({ baseHz: 110, partials: PARTIALS });
@@ -151,9 +179,10 @@ canvas.height = window.innerHeight;
 paper.setup(canvas);
 
 let center, W, H;
-let isSmooth = true;
-let speed    = 1;
+let isSmooth  = true;
+let speed     = 1;
 let timeAccum = 0;
+let synthMode = 'additive';
 const wave   = new paper.Path();
 let mousePos = paper.view.center.multiply(0.5);
 let waveAmp  = paper.view.center.y;
@@ -206,6 +235,26 @@ window.addEventListener('resize', () => {
   buildPath();
 });
 
+// ═══ WAVETABLE SAMPLING ════════════════════════════════════════════════════════
+// Reads the 9 interior segment Y values and linearly interpolates them to
+// N_SAMPLES, normalised to [-1, 1] relative to the midline.
+function sampleWave() {
+  const pts = [];
+  for (let i = 1; i < POINTS; i++) {
+    const dev = center.y - wave.segments[i].point.y;
+    pts.push(Math.max(-1, Math.min(dev / H, 1)));
+  }
+  const samples = new Float32Array(N_SAMPLES);
+  const M = pts.length; // POINTS - 1 = 9
+  for (let j = 0; j < N_SAMPLES; j++) {
+    const t  = (j / N_SAMPLES) * (M - 1);
+    const lo = Math.floor(t);
+    const hi = Math.min(lo + 1, M - 1);
+    samples[j] = pts[lo] + (t - lo) * (pts[hi] - pts[lo]);
+  }
+  return samples;
+}
+
 // ═══ SPECTRUM BARS UI ═════════════════════════════════════════════════════════
 const specEl = document.getElementById('spectrum');
 const bars = PARTIALS.map(h => {
@@ -217,26 +266,48 @@ const bars = PARTIALS.map(h => {
 });
 
 // ═══ WAVE UI TICK ══════════════════════════════════════════════════════════════
-// Reads the current wave shape, computes a per-partial activation level (0–1),
-// passes it to the engine, and updates the spectrum bars to match.
 function tick() {
   const amp = Math.abs(waveAmp);
 
-  const activations = PARTIALS.map((h, i) => {
-    const y         = wave.segments[i + 1].point.y;
-    const deviation = center.y - y; // positive = above midline = visual peak
-    return (deviation > 0 && amp > 8) ? Math.min(deviation / H, 1) : 0;
-  });
+  if (synthMode === 'additive') {
+    const activations = PARTIALS.map((h, i) => {
+      const y         = wave.segments[i + 1].point.y;
+      const deviation = center.y - y;
+      return (deviation > 0 && amp > 8) ? Math.min(deviation / H, 1) : 0;
+    });
 
-  engine.setActivations(activations);
+    engine.setActivations(activations);
 
-  // Spectrum bars: height and hue proportional to activation
-  activations.forEach((pct, i) => {
-    bars[i].style.height     = `${Math.max(2, Math.round(pct * 60))}px`;
-    bars[i].style.background = pct > 0.01
-      ? `hsl(${152 + i * 10}, 70%, ${22 + pct * 48}%)`
-      : '#111';
-  });
+    activations.forEach((pct, i) => {
+      bars[i].style.height     = `${Math.max(2, Math.round(pct * 60))}px`;
+      bars[i].style.background = pct > 0.01
+        ? `hsl(${152 + i * 10}, 70%, ${22 + pct * 48}%)`
+        : '#111';
+    });
+
+  } else {
+    // Wavetable: wave shape becomes the oscillator's single-cycle waveform.
+    // Amplitude tracks the tallest deviation from the midline, same scale as additive.
+    let maxDev = 0;
+    for (let i = 1; i < POINTS; i++) {
+      const dev = Math.abs(center.y - wave.segments[i].point.y);
+      if (dev > maxDev) maxDev = dev;
+    }
+    const amplitude = amp > 8 ? Math.min(maxDev / H, 1) : 0;
+
+    engine.setWaveShape(sampleWave(), amplitude);
+
+    // Single level bar — one oscillator, not 9 partials
+    bars.forEach((bar, i) => {
+      if (i === 0) {
+        bar.style.height     = `${Math.max(2, Math.round(amplitude * 60))}px`;
+        bar.style.background = amplitude > 0.01 ? `hsl(152, 70%, ${22 + amplitude * 48}%)` : '#111';
+      } else {
+        bar.style.height     = '2px';
+        bar.style.background = '#111';
+      }
+    });
+  }
 }
 
 // ═══ SPEED SLIDER ═════════════════════════════════════════════════════════════
@@ -245,6 +316,26 @@ const speedVal    = document.getElementById('speedVal');
 speedSlider.addEventListener('input', () => {
   speed = parseFloat(speedSlider.value);
   speedVal.textContent = `${speed.toFixed(2)}×`;
+});
+
+// ═══ MODE TOGGLE ══════════════════════════════════════════════════════════════
+const btnAdditive  = document.getElementById('btnAdditive');
+const btnWavetable = document.getElementById('btnWavetable');
+
+btnAdditive.addEventListener('click', () => {
+  if (synthMode === 'additive') return;
+  synthMode = 'additive';
+  engine.setMode('additive');
+  btnAdditive.classList.add('active');
+  btnWavetable.classList.remove('active');
+});
+
+btnWavetable.addEventListener('click', () => {
+  if (synthMode === 'wavetable') return;
+  synthMode = 'wavetable';
+  engine.setMode('wavetable');
+  btnWavetable.classList.add('active');
+  btnAdditive.classList.remove('active');
 });
 
 // ═══ BOOTSTRAP ════════════════════════════════════════════════════════════════
