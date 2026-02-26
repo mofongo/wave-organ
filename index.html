@@ -106,7 +106,7 @@
       cursor: pointer;
       transition: all 0.18s;
     }
-    #mode-toggle button:first-child { border-right: none; }
+    #mode-toggle button:not(:last-child) { border-right: none; }
     #mode-toggle button.active { color: #ccc; border-color: #333; background: #0d0d0d; }
     #mode-toggle button:hover:not(.active) { color: #555; border-color: #2a2a2a; }
 
@@ -167,7 +167,7 @@
 </div>
 
 <div id="speed-control">
-  SPEED
+  <span id="speedLabel">SPEED</span>
   <input type="range" id="speedSlider" min="0.05" max="3" step="0.05" value="1">
   <span id="speedVal">1.00×</span>
 </div>
@@ -175,6 +175,7 @@
 <div id="mode-toggle">
   <button id="btnAdditive" class="active">ADDITIVE</button>
   <button id="btnWavetable">WAVETABLE</button>
+  <button id="btnGravity">GRAVITY</button>
 </div>
 
 <div id="spectrum"></div>
@@ -183,9 +184,11 @@
 <script src="engine.js"></script>
 <script>
 // ═══ CONFIG ═══════════════════════════════════════════════════════════════════
-const POINTS    = 10;
-const PARTIALS  = [1, 2, 3, 4, 5, 6, 7, 8, 9]; // harmonic series → segments 1–9
-const N_SAMPLES = 64;                            // DFT resolution for wavetable mode
+const POINTS       = 10;
+const PARTIALS     = [1, 2, 3, 4, 5, 6, 7, 8, 9]; // harmonic series → segments 1–9
+const N_SAMPLES    = 64;                            // DFT resolution for wavetable mode
+const BALL_GRAVITY = 0.1;                           // px/frame² downward acceleration
+const BALL_INTERVAL = 30;                           // frames between ball spawns
 
 // ═══ ENGINE ════════════════════════════════════════════════════════════════════
 const engine = new WaveOrganEngine({ baseHz: 110, partials: PARTIALS });
@@ -201,6 +204,8 @@ let isSmooth  = true;
 let speed     = 1;
 let timeAccum = 0;
 let synthMode = 'additive';
+let balls     = [];
+let ballTimer = 0;
 const wave   = new paper.Path();
 let mousePos = paper.view.center.multiply(0.5);
 let waveAmp  = paper.view.center.y;
@@ -221,6 +226,51 @@ function buildPath() {
 }
 buildPath();
 
+// ═══ GRAVITY MODE — BALL PHYSICS ══════════════════════════════════════════════
+function spawnBall() {
+  const x      = (0.1 + Math.random() * 0.8) * W;
+  const r      = 4 + Math.random() * 4;
+  const circle = new paper.Path.Circle(new paper.Point(x, -r), r);
+  circle.fillColor = new paper.Color({ hue: 160, saturation: 0.6, brightness: 0.4 });
+  balls.push({ x, y: -r, vy: 1 + Math.random() * 1.5, circle });
+}
+
+function updateBalls() {
+  balls = balls.filter(b => {
+    b.vy += BALL_GRAVITY;
+    b.y  += b.vy;
+    b.circle.position = new paper.Point(b.x, b.y);
+    if (b.y > paper.view.size.height + 20) { b.circle.remove(); return false; }
+    return true;
+  });
+}
+
+// Each ball above the midline pulls the nearest wave segments upward.
+// The pull grows as the ball falls closer to the wave surface.
+// `speed` (driven by the slider) scales the pull strength.
+function applyBallsToWave() {
+  const segW = W / POINTS;
+  for (let i = 1; i < POINTS; i++) {
+    const sx = segW * i;
+    let pull = 0;
+    for (const b of balls) {
+      if (b.y < 0 || b.y >= H) continue;
+      const proxX = Math.max(0, 1 - Math.abs(b.x - sx) / (segW * 1.5));
+      const proxY = b.y / H; // 0 at top → 1 at midline
+      pull += proxX * proxY;
+    }
+    const targetY = H - Math.min(pull * speed, 1) * H * 0.85;
+    wave.segments[i].point.y += (targetY - wave.segments[i].point.y) * 0.15;
+  }
+  if (isSmooth) wave.smooth({ type: 'continuous' });
+}
+
+function clearGravity() {
+  balls.forEach(b => b.circle.remove());
+  balls     = [];
+  ballTimer = 0;
+}
+
 // Mouse / click via Paper.js Tool
 const tool = new paper.Tool();
 tool.onMouseMove = e => { mousePos = e.point; };
@@ -230,18 +280,22 @@ tool.onMouseDown = () => {
 };
 
 paper.view.onFrame = () => {
-  // Smoothly track mouse y → wave amplitude
   waveAmp += (center.y - mousePos.y - waveAmp) / 10;
 
-  timeAccum += speed;
-
-  // Animate interior segments
-  for (let i = 1; i < POINTS; i++) {
-    const seed = timeAccum + (i + i % 10) * 100;
-    const sh   = Math.sin(seed / 200) * waveAmp;
-    wave.segments[i].point.y = Math.sin(seed / 100) * sh + H;
+  if (synthMode === 'gravity') {
+    ballTimer++;
+    if (ballTimer >= BALL_INTERVAL) { ballTimer = 0; spawnBall(); }
+    updateBalls();
+    applyBallsToWave();
+  } else {
+    timeAccum += speed;
+    for (let i = 1; i < POINTS; i++) {
+      const seed = timeAccum + (i + i % 10) * 100;
+      const sh   = Math.sin(seed / 200) * waveAmp;
+      wave.segments[i].point.y = Math.sin(seed / 100) * sh + H;
+    }
+    if (isSmooth) wave.smooth({ type: 'continuous' });
   }
-  if (isSmooth) wave.smooth({ type: 'continuous' });
 
   if (engine.isReady) tick();
 };
@@ -287,10 +341,11 @@ const bars = PARTIALS.map(h => {
 function tick() {
   const amp = Math.abs(waveAmp);
 
-  if (synthMode === 'additive') {
+  if (synthMode === 'additive' || synthMode === 'gravity') {
     const activations = PARTIALS.map((h, i) => {
       const y         = wave.segments[i + 1].point.y;
       const deviation = center.y - y;
+      if (synthMode === 'gravity') return deviation > 0 ? Math.min(deviation / H, 1) : 0;
       return (deviation > 0 && amp > 8) ? Math.min(deviation / H, 1) : 0;
     });
 
@@ -331,29 +386,61 @@ function tick() {
 // ═══ SPEED SLIDER ═════════════════════════════════════════════════════════════
 const speedSlider = document.getElementById('speedSlider');
 const speedVal    = document.getElementById('speedVal');
+const speedLabel  = document.getElementById('speedLabel');
+
+function updateSliderLabel() {
+  const v = parseFloat(speedSlider.value);
+  if (synthMode === 'gravity') {
+    speedLabel.textContent = 'PULL';
+    speedVal.textContent   = v.toFixed(2);
+  } else {
+    speedLabel.textContent = 'SPEED';
+    speedVal.textContent   = `${v.toFixed(2)}×`;
+  }
+}
+
 speedSlider.addEventListener('input', () => {
   speed = parseFloat(speedSlider.value);
-  speedVal.textContent = `${speed.toFixed(2)}×`;
+  updateSliderLabel();
 });
 
 // ═══ MODE TOGGLE ══════════════════════════════════════════════════════════════
 const btnAdditive  = document.getElementById('btnAdditive');
 const btnWavetable = document.getElementById('btnWavetable');
+const btnGravity   = document.getElementById('btnGravity');
+
+function updateModeButtons(mode) {
+  btnAdditive.classList.toggle('active',  mode === 'additive');
+  btnWavetable.classList.toggle('active', mode === 'wavetable');
+  btnGravity.classList.toggle('active',   mode === 'gravity');
+}
 
 btnAdditive.addEventListener('click', () => {
   if (synthMode === 'additive') return;
+  if (synthMode === 'gravity') clearGravity();
   synthMode = 'additive';
   engine.setMode('additive');
-  btnAdditive.classList.add('active');
-  btnWavetable.classList.remove('active');
+  updateModeButtons('additive');
+  updateSliderLabel();
 });
 
 btnWavetable.addEventListener('click', () => {
   if (synthMode === 'wavetable') return;
+  if (synthMode === 'gravity') clearGravity();
   synthMode = 'wavetable';
   engine.setMode('wavetable');
-  btnWavetable.classList.add('active');
-  btnAdditive.classList.remove('active');
+  updateModeButtons('wavetable');
+  updateSliderLabel();
+});
+
+btnGravity.addEventListener('click', () => {
+  if (synthMode === 'gravity') return;
+  synthMode = 'gravity';
+  engine.setMode('additive'); // gravity uses additive synthesis
+  updateModeButtons('gravity');
+  updateSliderLabel();
+  // Reset wave to midline so balls start from a clean state
+  for (let i = 1; i < POINTS; i++) wave.segments[i].point.y = center.y;
 });
 
 // ═══ BOOTSTRAP ════════════════════════════════════════════════════════════════
