@@ -128,6 +128,24 @@
       min-height: 2px;
       transition: background 0.08s;
     }
+
+    @media (max-width: 600px) {
+      #hud {
+        bottom: auto;
+        top: 1.4rem;
+        left: 1.4rem;
+      }
+      #spectrum {
+        right: auto;
+        left: 50%;
+        transform: translateX(-50%);
+      }
+      #speed-control {
+        left: 50%;
+        transform: translateX(-50%);
+        bottom: calc(1.4rem + 64px + 0.8rem);
+      }
+    }
   </style>
 </head>
 <body>
