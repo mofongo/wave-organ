@@ -227,20 +227,74 @@ function buildPath() {
 buildPath();
 
 // ═══ GRAVITY MODE — BALL PHYSICS ══════════════════════════════════════════════
+
+// Interpolate wave Y at an arbitrary x position using the interior segments.
+function waveYAt(x) {
+  const segW = W / POINTS;
+  const t    = x / segW;
+  const lo   = Math.max(1, Math.min(Math.floor(t), POINTS - 1));
+  const hi   = Math.min(lo + 1, POINTS - 1);
+  const frac = t - Math.floor(t);
+  return wave.segments[lo].point.y * (1 - frac) + wave.segments[hi].point.y * frac;
+}
+
+// Elastic ball-ball collision resolution (equal mass, restitution 0.75).
+function resolveCollisions() {
+  for (let i = 0; i < balls.length; i++) {
+    for (let j = i + 1; j < balls.length; j++) {
+      const a = balls[i], b = balls[j];
+      const dx   = b.x - a.x, dy = b.y - a.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const min  = a.r + b.r;
+      if (dist >= min || dist === 0) continue;
+      const nx = dx / dist, ny = dy / dist;
+      // Separate overlapping circles
+      const overlap = (min - dist) * 0.5;
+      a.x -= nx * overlap; a.y -= ny * overlap;
+      b.x += nx * overlap; b.y += ny * overlap;
+      // Impulse (approaching only)
+      const dvn = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
+      if (dvn >= 0) continue;
+      const J = -(1 + 0.75) * dvn / 2;
+      a.vx -= J * nx; a.vy -= J * ny;
+      b.vx += J * nx; b.vy += J * ny;
+    }
+  }
+}
+
 function spawnBall() {
   const x      = (0.1 + Math.random() * 0.8) * W;
   const r      = 4 + Math.random() * 4;
   const circle = new paper.Path.Circle(new paper.Point(x, -r), r);
   circle.fillColor = new paper.Color({ hue: 160, saturation: 0.6, brightness: 0.4 });
-  balls.push({ x, y: -r, vy: 1 + Math.random() * 1.5, circle });
+  balls.push({ x, y: -r, vx: (Math.random() - 0.5) * 1.5, vy: 1 + Math.random() * 1.5, r, life: 480, circle });
 }
 
 function updateBalls() {
-  balls = balls.filter(b => {
+  // Physics + collisions
+  for (const b of balls) {
     b.vy += BALL_GRAVITY;
+    b.x  += b.vx;
     b.y  += b.vy;
+    // Side walls
+    if (b.x - b.r < 0) { b.x = b.r;     b.vx =  Math.abs(b.vx) * 0.75; }
+    if (b.x + b.r > W) { b.x = W - b.r; b.vx = -Math.abs(b.vx) * 0.75; }
+    // Top wall
+    if (b.y - b.r < 0) { b.y = b.r;     b.vy =  Math.abs(b.vy) * 0.6;  }
+    // Wave surface
+    const wy = waveYAt(b.x);
+    if (b.y + b.r >= wy && b.vy > 0) {
+      b.y  = wy - b.r;
+      b.vy = -Math.abs(b.vy) * 0.6;
+      b.vx *= 0.85;
+    }
+  }
+  resolveCollisions();
+  // Update visuals and expire
+  balls = balls.filter(b => {
+    b.life--;
     b.circle.position = new paper.Point(b.x, b.y);
-    if (b.y > paper.view.size.height + 20) { b.circle.remove(); return false; }
+    if (b.y > paper.view.size.height + 20 || b.life <= 0) { b.circle.remove(); return false; }
     return true;
   });
 }
