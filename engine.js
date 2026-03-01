@@ -119,12 +119,13 @@ class WaveOrganEngine {
   /**
    * Drive the synthesiser with per-partial activation levels.
    *
-   * Each value should be in [0, 1]. The engine applies:
-   *   audioGain[i] = clamp(activations[i], 0, 1) * maxGain / partials[i]
+   * Each value should be in [0, 1]. The engine applies index-based roll-off:
+   *   audioGain[i] = clamp(activations[i], 0, 1) * maxGain / (i + 1)
    *
-   * The 1/h roll-off gives a natural additive timbre — louder lower partials,
-   * quieter upper ones — so callers can treat all values uniformly as a simple
-   * "how active is this partial?" signal.
+   * Roll-off is index-based (1, 1/2, 1/3 …) rather than ratio-based, so it
+   * stays musically consistent across all tunings — partial 0 is always
+   * loudest, partial 8 is always quietest regardless of which frequencies are
+   * currently assigned.
    *
    * @param {number[]} activations – one value per partial
    */
@@ -133,8 +134,23 @@ class WaveOrganEngine {
     const now = this._ctx.currentTime;
     activations.forEach((a, i) => {
       if (i >= this._gains.length) return;
-      const g = Math.max(0, Math.min(a, 1)) * this._maxGain / this._partials[i];
+      const g = Math.max(0, Math.min(a, 1)) * this._maxGain / (i + 1);
       this._gains[i].gain.setTargetAtTime(g, now, 0.06);
+    });
+  }
+
+  /**
+   * Retune all oscillators to a new set of frequency ratios.
+   * Frequencies ramp smoothly so there are no clicks on tuning switches.
+   *
+   * @param {number[]} ratios – multipliers relative to baseHz, one per partial
+   */
+  setRatios(ratios) {
+    if (!this._ready) return;
+    const now = this._ctx.currentTime;
+    ratios.forEach((r, i) => {
+      if (i >= this._oscs.length) return;
+      this._oscs[i].frequency.setTargetAtTime(this._baseHz * r, now, 0.05);
     });
   }
 }
