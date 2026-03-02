@@ -52,6 +52,64 @@
       pointer-events: none;
     }
 
+    #speed-control {
+      position: fixed;
+      bottom: 1.4rem;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 0.8rem;
+      color: #252525;
+      font-size: 0.65rem;
+      font-family: 'Courier New', monospace;
+      letter-spacing: 0.1em;
+    }
+    #speedSlider {
+      -webkit-appearance: none;
+      width: 120px;
+      height: 1px;
+      background: #252525;
+      outline: none;
+      cursor: pointer;
+    }
+    #speedSlider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 8px;
+      height: 8px;
+      background: #444;
+      border-radius: 50%;
+    }
+    #speedSlider::-moz-range-thumb {
+      width: 8px;
+      height: 8px;
+      background: #444;
+      border: none;
+      border-radius: 50%;
+    }
+
+    /* Mode toggle */
+    #mode-toggle {
+      position: fixed;
+      top: 1.4rem;
+      right: 1.4rem;
+      display: flex;
+    }
+    #mode-toggle button {
+      padding: 6px 16px;
+      font-family: 'Courier New', monospace;
+      font-size: 0.62rem;
+      letter-spacing: 0.18em;
+      background: transparent;
+      color: #555;
+      border: 1px solid #333;
+      cursor: pointer;
+      transition: all 0.18s;
+    }
+    #mode-toggle button:not(:last-child) { border-right: none; }
+    #mode-toggle button.active { color: #ccc; border-color: #555; background: #0d0d0d; }
+    #mode-toggle button:hover:not(.active) { color: #888; border-color: #444; }
+
     /* Harmonic spectrum display */
     #spectrum {
       position: fixed;
@@ -92,6 +150,23 @@
     }
     #tuningSelect:hover { color: #666; border-bottom-color: #666; }
     #tuningSelect option { background: #0a0a0a; color: #aaa; letter-spacing: 0; }
+    @media (max-width: 600px) {
+      #hud {
+        bottom: auto;
+        top: 1.4rem;
+        left: 1.4rem;
+      }
+      #spectrum {
+        right: auto;
+        left: 50%;
+        transform: translateX(-50%);
+      }
+      #speed-control {
+        left: 50%;
+        transform: translateX(-50%);
+        bottom: calc(1.4rem + 64px + 0.8rem);
+      }
+    }
   </style>
 </head>
 <body>
@@ -110,6 +185,18 @@
 <div id="hud">
   MOVE MOUSE — wave height<br>
   CLICK — smooth / sharp
+</div>
+
+<div id="speed-control">
+  <span id="speedLabel">SPEED</span>
+  <input type="range" id="speedSlider" min="0.05" max="3" step="0.05" value="1">
+  <span id="speedVal">1.00×</span>
+</div>
+
+<div id="mode-toggle">
+  <button id="btnAdditive" class="active">ADDITIVE</button>
+  <button id="btnWavetable">WAVETABLE</button>
+  <button id="btnGravity">GRAVITY</button>
 </div>
 
 <div id="spectrum"></div>
@@ -142,6 +229,11 @@ const TUNINGS = {
   'Bell/Metallic':   [1,    2.756, 5.404, 8.933,  13.344, 18.641, 24.82,   31.87,    39.784 ],
   'Subharmonics':    [2,    1,     2/3,   1/2,    2/5,    1/3,    2/7,     1/4,      2/9    ],
 };
+const POINTS       = 10;
+const PARTIALS     = [1, 2, 3, 4, 5, 6, 7, 8, 9]; // harmonic series → segments 1–9
+const N_SAMPLES    = 64;                            // DFT resolution for wavetable mode
+const BALL_GRAVITY = 0.1;                           // px/frame² downward acceleration
+const BALL_INTERVAL = 30;                           // frames between ball spawns
 
 // ═══ ENGINE ════════════════════════════════════════════════════════════════════
 const engine = new WaveOrganEngine({ baseHz: 110, partials: PARTIALS });
@@ -153,7 +245,12 @@ canvas.height = window.innerHeight;
 paper.setup(canvas);
 
 let center, W, H;
-let isSmooth = true;
+let isSmooth  = true;
+let speed     = 1;
+let timeAccum = 0;
+let synthMode = 'additive';
+let balls     = [];
+let ballTimer = 0;
 const wave   = new paper.Path();
 let mousePos = paper.view.center.multiply(0.5);
 let waveAmp  = paper.view.center.y;
@@ -174,6 +271,71 @@ function buildPath() {
 }
 buildPath();
 
+// ═══ GRAVITY MODE — BALL PHYSICS ══════════════════════════════════════════════
+
+// Interpolate wave Y at an arbitrary x position using the interior segments.
+function waveYAt(x) {
+  const segW = W / POINTS;
+  const t    = x / segW;
+  const lo   = Math.max(1, Math.min(Math.floor(t), POINTS - 1));
+  const hi   = Math.min(lo + 1, POINTS - 1);
+  const frac = t - Math.floor(t);
+  return wave.segments[lo].point.y * (1 - frac) + wave.segments[hi].point.y * frac;
+}
+
+function spawnBall() {
+  const x      = (0.1 + Math.random() * 0.8) * W;
+  const r      = 4 + Math.random() * 4;
+  const circle = new paper.Path.Circle(new paper.Point(x, -r), r);
+  circle.fillColor = new paper.Color({ hue: 160, saturation: 0.6, brightness: 0.4 });
+  balls.push({ x, y: -r, vx: (Math.random() - 0.5) * 1.5, vy: 1 + Math.random() * 1.5, r, alpha: 1, fading: false, circle });
+}
+
+function updateBalls() {
+  for (const b of balls) {
+    if (b.fading) {
+      b.alpha -= 0.07; // fade out over ~14 frames
+    } else {
+      b.vy += BALL_GRAVITY;
+      b.x  += b.vx;
+      b.y  += b.vy;
+      if (b.y + b.r >= waveYAt(b.x)) b.fading = true;
+    }
+    b.circle.position        = new paper.Point(b.x, b.y);
+    b.circle.fillColor.alpha = Math.max(0, b.alpha);
+  }
+  balls = balls.filter(b => {
+    if (b.alpha <= 0 || b.y > paper.view.size.height + 20) { b.circle.remove(); return false; }
+    return true;
+  });
+}
+
+// Each ball above the midline pulls the nearest wave segments upward.
+// The pull grows as the ball falls closer to the wave surface.
+// `speed` (driven by the slider) scales the pull strength.
+function applyBallsToWave() {
+  const segW = W / POINTS;
+  for (let i = 1; i < POINTS; i++) {
+    const sx = segW * i;
+    let pull = 0;
+    for (const b of balls) {
+      if (b.y < 0 || b.y >= H) continue;
+      const proxX = Math.max(0, 1 - Math.abs(b.x - sx) / (segW * 1.5));
+      const proxY = b.y / H; // 0 at top → 1 at midline
+      pull += proxX * proxY;
+    }
+    const targetY = H - Math.min(pull * speed, 1) * H * 0.85;
+    wave.segments[i].point.y += (targetY - wave.segments[i].point.y) * 0.15;
+  }
+  if (isSmooth) wave.smooth({ type: 'continuous' });
+}
+
+function clearGravity() {
+  balls.forEach(b => b.circle.remove());
+  balls     = [];
+  ballTimer = 0;
+}
+
 // Mouse / click via Paper.js Tool
 const tool = new paper.Tool();
 tool.onMouseMove = e => { mousePos = e.point; };
@@ -182,17 +344,23 @@ tool.onMouseDown = () => {
   if (!isSmooth) wave.segments.forEach(s => { s.handleIn = s.handleOut = null; });
 };
 
-paper.view.onFrame = event => {
-  // Smoothly track mouse y → wave amplitude
+paper.view.onFrame = () => {
   waveAmp += (center.y - mousePos.y - waveAmp) / 10;
 
-  // Animate interior segments
-  for (let i = 1; i < POINTS; i++) {
-    const seed = event.count + (i + i % 10) * 100;
-    const sh   = Math.sin(seed / 200) * waveAmp;
-    wave.segments[i].point.y = Math.sin(seed / 100) * sh + H;
+  if (synthMode === 'gravity') {
+    ballTimer++;
+    if (ballTimer >= BALL_INTERVAL) { ballTimer = 0; spawnBall(); }
+    updateBalls();
+    applyBallsToWave();
+  } else {
+    timeAccum += speed;
+    for (let i = 1; i < POINTS; i++) {
+      const seed = timeAccum + (i + i % 10) * 100;
+      const sh   = Math.sin(seed / 200) * waveAmp;
+      wave.segments[i].point.y = Math.sin(seed / 100) * sh + H;
+    }
+    if (isSmooth) wave.smooth({ type: 'continuous' });
   }
-  if (isSmooth) wave.smooth({ type: 'continuous' });
 
   if (engine.isReady) tick();
 };
@@ -203,6 +371,26 @@ window.addEventListener('resize', () => {
   paper.view.viewSize = new paper.Size(window.innerWidth, window.innerHeight);
   buildPath();
 });
+
+// ═══ WAVETABLE SAMPLING ════════════════════════════════════════════════════════
+// Reads the 9 interior segment Y values and linearly interpolates them to
+// N_SAMPLES, normalised to [-1, 1] relative to the midline.
+function sampleWave() {
+  const pts = [];
+  for (let i = 1; i < POINTS; i++) {
+    const dev = center.y - wave.segments[i].point.y;
+    pts.push(Math.max(-1, Math.min(dev / H, 1)));
+  }
+  const samples = new Float32Array(N_SAMPLES);
+  const M = pts.length; // POINTS - 1 = 9
+  for (let j = 0; j < N_SAMPLES; j++) {
+    const t  = (j / N_SAMPLES) * (M - 1);
+    const lo = Math.floor(t);
+    const hi = Math.min(lo + 1, M - 1);
+    samples[j] = pts[lo] + (t - lo) * (pts[hi] - pts[lo]);
+  }
+  return samples;
+}
 
 // ═══ SPECTRUM BARS UI ═════════════════════════════════════════════════════════
 const specEl = document.getElementById('spectrum');
@@ -215,26 +403,81 @@ const bars = PARTIALS.map(h => {
 });
 
 // ═══ WAVE UI TICK ══════════════════════════════════════════════════════════════
-// Reads the current wave shape, computes a per-partial activation level (0–1),
-// passes it to the engine, and updates the spectrum bars to match.
 function tick() {
   const amp = Math.abs(waveAmp);
 
-  const activations = PARTIALS.map((h, i) => {
-    const y         = wave.segments[i + 1].point.y;
-    const deviation = center.y - y; // positive = above midline = visual peak
-    return (deviation > 0 && amp > 8) ? Math.min(deviation / amp, 1) : 0;
-  });
+  if (synthMode === 'additive' || synthMode === 'gravity') {
+    const activations = PARTIALS.map((h, i) => {
+      const y         = wave.segments[i + 1].point.y;
+      const deviation = center.y - y;
+      if (synthMode === 'gravity') return deviation > 0 ? Math.min(deviation / H, 1) : 0;
+      return (deviation > 0 && amp > 8) ? Math.min(deviation / H, 1) : 0;
+    });
 
-  engine.setActivations(activations);
+    engine.setActivations(activations);
 
-  // Spectrum bars: height and hue proportional to activation
-  activations.forEach((pct, i) => {
-    bars[i].style.height     = `${Math.max(2, Math.round(pct * 60))}px`;
-    bars[i].style.background = pct > 0.01
-      ? `hsl(${152 + i * 10}, 70%, ${22 + pct * 48}%)`
-      : '#111';
-  });
+    activations.forEach((pct, i) => {
+      bars[i].style.height     = `${Math.max(2, Math.round(pct * 60))}px`;
+      bars[i].style.background = pct > 0.01
+        ? `hsl(${152 + i * 10}, 70%, ${22 + pct * 48}%)`
+        : '#111';
+    });
+
+  } else {
+    // Wavetable: wave shape becomes the oscillator's single-cycle waveform.
+    // Amplitude tracks the tallest deviation from the midline, same scale as additive.
+    let maxDev = 0;
+    for (let i = 1; i < POINTS; i++) {
+      const dev = Math.abs(center.y - wave.segments[i].point.y);
+      if (dev > maxDev) maxDev = dev;
+    }
+    const amplitude = amp > 8 ? Math.min(maxDev / H, 1) : 0;
+
+    engine.setWaveShape(sampleWave(), amplitude);
+
+    // Single level bar — one oscillator, not 9 partials
+    bars.forEach((bar, i) => {
+      if (i === 0) {
+        bar.style.height     = `${Math.max(2, Math.round(amplitude * 60))}px`;
+        bar.style.background = amplitude > 0.01 ? `hsl(152, 70%, ${22 + amplitude * 48}%)` : '#111';
+      } else {
+        bar.style.height     = '2px';
+        bar.style.background = '#111';
+      }
+    });
+  }
+}
+
+// ═══ SPEED SLIDER ═════════════════════════════════════════════════════════════
+const speedSlider = document.getElementById('speedSlider');
+const speedVal    = document.getElementById('speedVal');
+const speedLabel  = document.getElementById('speedLabel');
+
+function updateSliderLabel() {
+  const v = parseFloat(speedSlider.value);
+  if (synthMode === 'gravity') {
+    speedLabel.textContent = 'PULL';
+    speedVal.textContent   = v.toFixed(2);
+  } else {
+    speedLabel.textContent = 'SPEED';
+    speedVal.textContent   = `${v.toFixed(2)}×`;
+  }
+}
+
+speedSlider.addEventListener('input', () => {
+  speed = parseFloat(speedSlider.value);
+  updateSliderLabel();
+});
+
+// ═══ MODE TOGGLE ══════════════════════════════════════════════════════════════
+const btnAdditive  = document.getElementById('btnAdditive');
+const btnWavetable = document.getElementById('btnWavetable');
+const btnGravity   = document.getElementById('btnGravity');
+
+function updateModeButtons(mode) {
+  btnAdditive.classList.toggle('active',  mode === 'additive');
+  btnWavetable.classList.toggle('active', mode === 'wavetable');
+  btnGravity.classList.toggle('active',   mode === 'gravity');
 }
 
 // ═══ TUNING ════════════════════════════════════════════════════════════════════
@@ -247,6 +490,33 @@ function applyTuning(name) {
 }
 
 tuningSelect.addEventListener('change', e => applyTuning(e.target.value));
+btnAdditive.addEventListener('click', () => {
+  if (synthMode === 'additive') return;
+  if (synthMode === 'gravity') clearGravity();
+  synthMode = 'additive';
+  engine.setMode('additive');
+  updateModeButtons('additive');
+  updateSliderLabel();
+});
+
+btnWavetable.addEventListener('click', () => {
+  if (synthMode === 'wavetable') return;
+  if (synthMode === 'gravity') clearGravity();
+  synthMode = 'wavetable';
+  engine.setMode('wavetable');
+  updateModeButtons('wavetable');
+  updateSliderLabel();
+});
+
+btnGravity.addEventListener('click', () => {
+  if (synthMode === 'gravity') return;
+  synthMode = 'gravity';
+  engine.setMode('additive'); // gravity uses additive synthesis
+  updateModeButtons('gravity');
+  updateSliderLabel();
+  // Reset wave to midline so balls start from a clean state
+  for (let i = 1; i < POINTS; i++) wave.segments[i].point.y = center.y;
+});
 
 // ═══ BOOTSTRAP ════════════════════════════════════════════════════════════════
 document.getElementById('startBtn').addEventListener('click', () => {
