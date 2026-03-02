@@ -129,6 +129,27 @@
       transition: background 0.08s;
     }
 
+    /* Tuning selector */
+    #tuningSelect {
+      position: fixed;
+      top: 1.4rem;
+      right: 1.4rem;
+      background: transparent;
+      border: none;
+      border-bottom: 1px solid #252525;
+      color: #252525;
+      font-family: 'Courier New', monospace;
+      font-size: 0.65rem;
+      letter-spacing: 0.15em;
+      cursor: pointer;
+      padding: 0 2px 3px 0;
+      appearance: none;
+      -webkit-appearance: none;
+      outline: none;
+      transition: color 0.2s, border-color 0.2s;
+    }
+    #tuningSelect:hover { color: #666; border-bottom-color: #666; }
+    #tuningSelect option { background: #0a0a0a; color: #aaa; letter-spacing: 0; }
     @media (max-width: 600px) {
       #hud {
         bottom: auto;
@@ -180,10 +201,34 @@
 
 <div id="spectrum"></div>
 
+<select id="tuningSelect">
+  <option>Harmonic Series</option>
+  <option>Odd Harmonics</option>
+  <option>Organ Drawbars</option>
+  <option>Just Major</option>
+  <option>Just Minor</option>
+  <option>Fifths Stack</option>
+  <option>Bell/Metallic</option>
+  <option>Subharmonics</option>
+</select>
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/paper.js/0.12.17/paper-full.min.js"></script>
 <script src="engine.js"></script>
 <script>
 // ═══ CONFIG ═══════════════════════════════════════════════════════════════════
+const POINTS   = 10;
+const PARTIALS = [1, 2, 3, 4, 5, 6, 7, 8, 9]; // 9 partials → wave segments 1–9
+
+const TUNINGS = {
+  'Harmonic Series': [1,    2,     3,     4,      5,      6,      7,       8,        9      ],
+  'Odd Harmonics':   [1,    3,     5,     7,      9,      11,     13,      15,       17     ],
+  'Organ Drawbars':  [0.5,  1,     1.5,   2,      3,      4,      5,       6,        8      ],
+  'Just Major':      [1,    9/8,   5/4,   4/3,    3/2,    5/3,    15/8,    2,        9/4    ],
+  'Just Minor':      [1,    9/8,   6/5,   4/3,    3/2,    8/5,    9/5,     2,        9/4    ],
+  'Fifths Stack':    [1,    3/2,   9/4,   27/8,   81/16,  243/32, 729/64,  2187/128, 6561/256],
+  'Bell/Metallic':   [1,    2.756, 5.404, 8.933,  13.344, 18.641, 24.82,   31.87,    39.784 ],
+  'Subharmonics':    [2,    1,     2/3,   1/2,    2/5,    1/3,    2/7,     1/4,      2/9    ],
+};
 const POINTS       = 10;
 const PARTIALS     = [1, 2, 3, 4, 5, 6, 7, 8, 9]; // harmonic series → segments 1–9
 const N_SAMPLES    = 64;                            // DFT resolution for wavetable mode
@@ -435,6 +480,16 @@ function updateModeButtons(mode) {
   btnGravity.classList.toggle('active',   mode === 'gravity');
 }
 
+// ═══ TUNING ════════════════════════════════════════════════════════════════════
+const tuningSelect = document.getElementById('tuningSelect');
+
+function applyTuning(name) {
+  const ratios = TUNINGS[name];
+  if (engine.isReady) engine.setRatios(ratios);
+  bars.forEach((b, i) => { b.title = `${(engine.baseHz * ratios[i]).toFixed(1)} Hz`; });
+}
+
+tuningSelect.addEventListener('change', e => applyTuning(e.target.value));
 btnAdditive.addEventListener('click', () => {
   if (synthMode === 'additive') return;
   if (synthMode === 'gravity') clearGravity();
@@ -467,6 +522,7 @@ btnGravity.addEventListener('click', () => {
 document.getElementById('startBtn').addEventListener('click', () => {
   document.getElementById('overlay').style.display = 'none';
   engine.start();
+  applyTuning(tuningSelect.value);
 });
 </script>
 </body>
