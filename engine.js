@@ -169,6 +169,9 @@ class WaveOrganEngine {
       if (i >= this._oscs.length) return;
       this._oscs[i].frequency.setTargetAtTime(this._baseHz * r, now, 0.05);
     });
+  }
+
+  /**
    * Switch synthesis mode with a short crossfade.
    * Safe to call before start() — the mode preference is stored and honoured
    * once the engine is running.
@@ -222,5 +225,34 @@ class WaveOrganEngine {
 
     const g = Math.max(0, Math.min(amplitude, 1)) * this._maxGain;
     this._waveGain.gain.setTargetAtTime(g, this._ctx.currentTime, 0.06);
+  }
+
+  /**
+   * Play a short note at the given frequency, velocity and duration.
+   * Used by the step sequencer. Creates a temporary oscillator that
+   * self-destructs after the note ends.
+   *
+   * @param {number} freq     – frequency in Hz
+   * @param {number} velocity – 0–1 loudness scalar
+   * @param {number} duration – note length in seconds
+   */
+  playNote(freq, velocity, duration) {
+    if (!this._ready) return;
+    const ctx = this._ctx;
+    const now = ctx.currentTime;
+    const osc  = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    const peak = Math.max(0, Math.min(velocity, 1)) * this._maxGain * 2;
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(peak, now + 0.005);
+    gain.gain.setValueAtTime(peak, now + Math.max(0, duration - 0.03));
+    gain.gain.linearRampToValueAtTime(0, now + duration);
+    osc.connect(gain);
+    gain.connect(this._master);
+    osc.start(now);
+    osc.stop(now + duration + 0.01);
+    osc.onended = () => { osc.disconnect(); gain.disconnect(); };
   }
 }
