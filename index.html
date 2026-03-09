@@ -290,17 +290,30 @@
       font-size: 0.58rem;
       letter-spacing: 0.08em;
     }
-    #seq-step-count input {
-      width: 30px;
-      background: transparent;
-      border: none;
-      border-bottom: 1px solid #333;
+    #seq-step-count select, #seq-divider select {
+      background: #0a0a0a;
+      border: 1px solid #222;
       color: #888;
       font-family: inherit;
-      font-size: 0.6rem;
+      font-size: 0.55rem;
       text-align: center;
       outline: none;
-      padding: 1px 0;
+      padding: 2px 4px;
+      cursor: pointer;
+      letter-spacing: 0.05em;
+    }
+    #seq-step-count select:hover, #seq-divider select:hover { border-color: #444; color: #ccc; }
+    #seq-step-count select option, #seq-divider select option { background: #0a0a0a; color: #aaa; }
+
+    #seq-divider {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 0 10px 8px;
+      color: #444;
+      font-size: 0.52rem;
+      letter-spacing: 0.1em;
     }
 
     @media (max-width: 600px) {
@@ -366,7 +379,7 @@
     </div>
     <div id="seq-transport">
       <div id="seq-step-count">
-        STEPS <input id="stepCountInput" type="number" min="2" max="32" value="16">
+        STEPS <select id="stepCountInput"></select>
       </div>
       <div id="seq-tempo">
         BPM <input id="tempoInput" type="number" min="20" max="300" value="120">
@@ -375,6 +388,9 @@
     </div>
   </div>
   <div id="seq-grid"></div>
+  <div id="seq-divider">
+    CLK DIV <select id="dividerSelect"></select>
+  </div>
 </div>
 
 <select id="tuningSelect">
@@ -708,24 +724,68 @@ const SEQ_FREQS = [
 ];
 const SEQ_LENGTHS = [0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0];
 
+// Clock divider options: value = number of master ticks per step advance.
+// Triplet divisions fit 3 in the space of 2, so multiplied by 2/3.
+const DIVISIONS = [
+  { label: '/1',   value: 1 },
+  { label: '/2',   value: 2 },
+  { label: '/2T',  value: 1.333 },
+  { label: '/3',   value: 3 },
+  { label: '/3T',  value: 2 },
+  { label: '/4',   value: 4 },
+  { label: '/4T',  value: 2.667 },
+  { label: '/5',   value: 5 },
+  { label: '/6',   value: 6 },
+  { label: '/6T',  value: 4 },
+  { label: '/7',   value: 7 },
+  { label: '/8',   value: 8 },
+  { label: '/8T',  value: 5.333 },
+  { label: '/9',   value: 9 },
+];
+
 const seq = {
   numSteps: 16,
   bpm: 120,
   playing: false,
-  currentStep: -1,
+  masterTick: 0,
   intervalId: null,
   activeTab: 'pitch',
-  pitch:       Array(32).fill(7),   // default A2
-  length:      Array(32).fill(4),   // default 0.25s
-  velocity:    Array(32).fill(8),   // 0–10
-  probability: Array(32).fill(10),  // 0–10 (100%)
+  pitch:       Array(32).fill(7),
+  length:      Array(32).fill(4),
+  velocity:    Array(32).fill(8),
+  probability: Array(32).fill(10),
+  // Per-tab clock division (index into DIVISIONS)
+  division: { pitch: 0, length: 0, velocity: 0, probability: 0 },
+  // Per-tab accumulated ticks and current step position
+  accum:    { pitch: 0, length: 0, velocity: 0, probability: 0 },
+  step:     { pitch: -1, length: -1, velocity: -1, probability: -1 },
 };
 
 const seqGrid        = document.getElementById('seq-grid');
 const seqPlayBtn     = document.getElementById('seq-play');
 const tempoInput     = document.getElementById('tempoInput');
 const stepCountInput = document.getElementById('stepCountInput');
+const dividerSelect  = document.getElementById('dividerSelect');
 const seqTabs        = document.querySelectorAll('#seq-tabs button');
+
+// Populate steps dropdown (2–16)
+for (let n = 2; n <= 16; n++) {
+  const opt = document.createElement('option');
+  opt.value = n; opt.textContent = n;
+  if (n === 16) opt.selected = true;
+  stepCountInput.appendChild(opt);
+}
+
+// Populate clock divider dropdown
+DIVISIONS.forEach((d, idx) => {
+  const opt = document.createElement('option');
+  opt.value = idx; opt.textContent = d.label;
+  dividerSelect.appendChild(opt);
+});
+
+function syncDividerSelect() {
+  dividerSelect.value = seq.division[seq.activeTab];
+}
 
 function seqTabConfig(tab) {
   switch (tab) {
@@ -741,7 +801,7 @@ function buildSeqGrid() {
   const cfg = seqTabConfig(seq.activeTab);
   for (let i = 0; i < seq.numSteps; i++) {
     const step = document.createElement('div');
-    step.className = 'seq-step' + (i === seq.currentStep ? ' current' : '');
+    step.className = 'seq-step' + (i === seq.step[seq.activeTab] ? ' current' : '');
     step.dataset.index = i;
 
     const bar = document.createElement('div');
@@ -782,7 +842,8 @@ function buildSeqGrid() {
 
 function updateSeqHighlight() {
   const steps = seqGrid.querySelectorAll('.seq-step');
-  steps.forEach((s, i) => s.classList.toggle('current', i === seq.currentStep));
+  const cur = seq.step[seq.activeTab];
+  steps.forEach((s, i) => s.classList.toggle('current', i === cur));
 }
 
 seqTabs.forEach(btn => {
@@ -791,6 +852,7 @@ seqTabs.forEach(btn => {
     btn.classList.add('active');
     seq.activeTab = btn.dataset.tab;
     buildSeqGrid();
+    syncDividerSelect();
   });
 });
 
@@ -801,28 +863,56 @@ tempoInput.addEventListener('change', () => {
 });
 
 stepCountInput.addEventListener('change', () => {
-  seq.numSteps = Math.max(2, Math.min(32, parseInt(stepCountInput.value) || 16));
-  stepCountInput.value = seq.numSteps;
+  seq.numSteps = parseInt(stepCountInput.value) || 16;
   buildSeqGrid();
   if (seq.playing) { stopSeq(); startSeq(); }
 });
 
+dividerSelect.addEventListener('change', () => {
+  seq.division[seq.activeTab] = parseInt(dividerSelect.value);
+});
+
+function advanceTab(tab) {
+  const div = DIVISIONS[seq.division[tab]].value;
+  seq.accum[tab] += 1;
+  if (seq.accum[tab] >= div) {
+    seq.accum[tab] -= div;
+    seq.step[tab] = (seq.step[tab] + 1) % seq.numSteps;
+    return true;
+  }
+  return false;
+}
+
 function seqTick() {
-  seq.currentStep = (seq.currentStep + 1) % seq.numSteps;
+  seq.masterTick++;
+
+  // Advance each tab independently according to its clock divider
+  const pitchAdvanced = advanceTab('pitch');
+  advanceTab('length');
+  advanceTab('velocity');
+  advanceTab('probability');
+
   updateSeqHighlight();
 
-  const i = seq.currentStep;
-  const prob = seq.probability[i] / 10;
+  // Trigger a note when the pitch sequencer advances
+  if (!pitchAdvanced) return;
+
+  const pi = seq.step.pitch;
+  const li = seq.step.length;
+  const vi = seq.step.velocity;
+  const ri = seq.step.probability;
+
+  const prob = seq.probability[ri] / 10;
   if (Math.random() > prob) return;
 
-  const vel  = seq.velocity[i] / 10;
-  const freq = SEQ_FREQS[seq.pitch[i]];
-  const dur  = SEQ_LENGTHS[seq.length[i]];
+  const vel  = seq.velocity[vi] / 10;
+  const freq = SEQ_FREQS[seq.pitch[pi]];
+  const dur  = SEQ_LENGTHS[seq.length[li]];
   engine.playNote(freq, vel, dur);
 }
 
 function startSeq() {
-  const msPerStep = (60 / seq.bpm) * 1000 / 4; // 16th-note grid
+  const msPerStep = (60 / seq.bpm) * 1000 / 4; // master clock = 16th notes
   seq.intervalId = setInterval(seqTick, msPerStep);
   seq.playing = true;
   seqPlayBtn.textContent = 'STOP';
@@ -833,7 +923,11 @@ function stopSeq() {
   clearInterval(seq.intervalId);
   seq.intervalId = null;
   seq.playing = false;
-  seq.currentStep = -1;
+  seq.masterTick = 0;
+  for (const tab of ['pitch','length','velocity','probability']) {
+    seq.step[tab] = -1;
+    seq.accum[tab] = 0;
+  }
   seqPlayBtn.textContent = 'PLAY';
   seqPlayBtn.classList.remove('playing');
   updateSeqHighlight();
